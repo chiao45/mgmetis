@@ -9,7 +9,7 @@ Introduction
 
 `mgmetis` is a mesh and graph Partitioning suite wrapped on top of
 `METIS and ParMETIS <http://glaros.dtc.umn.edu/gkhome/views/metis>`_. It targets
-at intermidate level of package developers who work in, e.g., finite element
+at intermediate level of package developers who work in, e.g., finite element
 libraries.
 
 `mgmetis` provides all functionalities from original METIS/ParMETIS via 1) a
