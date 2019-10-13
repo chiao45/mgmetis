@@ -5,6 +5,8 @@
 .. moduleauthor:: Qiao Chen, <benechiao@gmail.com>
 """
 
+import ctypes as c
+
 import numpy as np
 
 from .enums import ERROR
@@ -146,3 +148,89 @@ def process_mesh(*cells, **kw):
     if eptr.dtype.alignment < 4:
         return np.asarray(eptr, dtype=np.int32), np.asarray(eind, dtype=np.int32), nv
     return eptr, eind, nv
+
+
+def as_pointer(ar):
+    """Helper function to get the array starting memory address
+
+    This function simply wraps around of `np.ndarray.ctypes.data_as`. In
+    addition, if `ar` is None, then None will be returned indicating ``NULL``
+    pointer.
+
+    Parameters
+    ----------
+    ar : {np.ndarray, None}
+        Either a valid array or a ``NULL`` pointer
+
+    Returns
+    -------
+    ctypes.POINTER or None
+        The starting memory address of the given array or ``NULL``.
+
+    Warnings
+    --------
+
+    The caller needs to ensure `ar` won't be GL-ed while interfacing with the
+    low level memory addresses.
+    """
+
+    if ar is None:
+        return None
+    return ar.ctypes.data_as(c.POINTER(np.ctypeslib.as_ctypes_type(ar.dtype)))
+
+
+def get_or_create_workspace(kw, key, n, dtype):
+    """Get the the buffer from user key-worded inputs or create one
+
+    Parameters
+    ----------
+    kw : dict
+        Implicitly converted from key-worded inputs
+    key : str
+        Key in `kw`
+    n : int
+        Size of the array
+    dtype : np.dtype
+        Data type for the output array
+
+    Returns
+    -------
+    np.ndarray
+        If `key` value exists in `kw` and it's an array of data type `dtype`,
+        then it will be wrapped. Otherwise, a new array will be created and
+        returned.
+    """
+    # helper to create or get the user workspace
+    v = kw.get(key, None)
+    v = np.asarray(v if v is not None else np.empty(n, dtype=dtype), dtype=dtype)
+    if v.size < n:
+        raise ValueError("{} should be at least size of {}".format(key, n))
+    return v
+
+
+def try_get_input_array(kw, key, n, dtype):
+    """Try to get an input argument from user key-worded inputs
+
+    Parameters
+    ----------
+    kw : dict
+        Implicitly converted from key-worded inputs
+    key : str
+        Key in `kw`
+    n : int
+        Size of the input array
+    dtype : np.dtype
+        Data type of the array
+
+    Returns
+    -------
+    {np.ndarray, None}
+        Return None if ``key is not in kw``.
+    """
+    v = kw.get(key, None)
+    if v is None:
+        return None
+    v = np.asarray(v, dtype=dtype)
+    if v.size < n:
+        raise ValueError("{} should b e at least size of {}".format(key, n))
+    return v
