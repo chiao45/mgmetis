@@ -1,3 +1,3 @@
 # *mgmetis* todo list #
 
-- [] Enable multithreading METIS
+- [ ] Enable multithreading METIS
