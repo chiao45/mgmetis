@@ -7,7 +7,9 @@
 
 import ctypes as c
 
-from .utils import get_so, METIS_ERRORS
+import numpy as np
+
+from .utils import get_so, METIS_ERRORS, process_mesh
 
 
 def _handle_metis_ret(ret, func, args):
@@ -85,7 +87,7 @@ class _LibMetisModule:
         c_func.errcheck = _handle_metis_ret
         setattr(cls, fname, c_func)
         _all.append(fname)
-        return _all  # take advantage of mutable input behavior
+        return _all  # XXX: take advantage of mutable input behavior
 
 
 class _Lib32MetisModule(_LibMetisModule):
@@ -101,6 +103,7 @@ class _Lib64MetisModule(_LibMetisModule):
         return super().__new__(cls, "metis64")
 
 
+# pylint: disable=no-member
 _libmetis = _Lib32MetisModule()  # 32bit module
 _libmetis64 = _Lib64MetisModule()  # 64bit module
 try:
@@ -115,16 +118,29 @@ finally:
 
 def _get_libmetis(dtype):
     # helper to get the underlying C METIS libraries with proper integer type
-    if (dtype.alignment >> 2) - 1:
-        # 8 byte
-        return _libmetis64
-    return _libmetis
+    if (dtype.alignment >> 2) & 1:
+        # 4 byte
+        return _libmetis
+    return _libmetis64
 
 
-def _create_int(lib, v=0):
-    """Helper function to create an integer with potentially default value
-    """
-    return lib._IDX_T(v)
+def _array_ptr(ar, ct):
+    # helper to get the pointer of an array
+    # NOTE: None is NULL pointer
+    return ar.ctypes.data_as(c.POINTER(ct)) if ar is not None else None
+
+
+def get_default_opts(dtype="intc"):
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.integer):
+        raise ValueError("dtype must be integer")
+    if not dtype.alignment < 4:
+        raise ValueError("integer type must be int32 or int64")
+    # NOTE: METIS_NOPTIONS=40
+    lib = _get_libmetis(dtype)
+    opts = np.empty(40, dtype=dtype)
+    lib.SetDefaultOptions(opts.ctypes.data_as(c.POINTER(lib._IDX_T)))
+    return opts
 
 
 def part_graph_recursize(*args):
@@ -135,9 +151,74 @@ def part_graph_kway(*args):
     pass
 
 
-def part_mesh_nodal(*args):
-    pass
+def part_mesh_nodal(cells, nparts, **kw):
+    if nparts <= 0:
+        raise ValueError("invalid nparts")
+    nv = kw.get("nv", -1)
+    if nv == 0:
+        raise ValueError("cannot be empty mesh")
+    eptr, eind, nv = process_mesh(cells, nv)
+    vwgt = vsize = tpwgts = None
+    opts = np.asarray(
+        kw.get("options", None) or get_default_opts(eptr.dtype), dtype=eptr.dtype
+    )
+    lib = _get_libmetis(eptr.dtype)
+    idx_t = lib._IDX_T
+    ne, nv, nparts, objval = (idx_t(eptr.size - 1), idx_t(nv), idx_t(nparts), idx_t(0))
+    npart = np.empty(nv, dtype=eptr.dtype)
+    epart = np.empty(ne, dtype=eptr.dtype)
+    lib.PartMeshNodal(
+        c.byref(ne),
+        c.byref(nv),
+        _array_ptr(eptr, idx_t),
+        _array_ptr(eind, idx_t),
+        _array_ptr(vwgt, idx_t),
+        _array_ptr(vsize, idx_t),
+        c.byref(nparts),
+        _array_ptr(tpwgts, c.c_float),
+        _array_ptr(opts, idx_t),
+        c.byref(objval),
+        _array_ptr(epart, idx_t),
+        _array_ptr(npart, idx_t),
+    )
+    return objval.value, epart, npart
 
 
-def part_mesh_dual(*args):
-    pass
+def part_mesh_dual(cells, nparts, ncommon=1, **kw):
+    if nparts <= 0:
+        raise ValueError("invalid nparts")
+    nv = kw.get("nv", -1)
+    if nv == 0:
+        raise ValueError("cannot be empty mesh")
+    eptr, eind, nv = process_mesh(cells, nv)
+    vwgt = vsize = tpwgts = None
+    opts = np.asarray(
+        kw.get("options", None) or get_default_opts(eptr.dtype), dtype=eptr.dtype
+    )
+    lib = _get_libmetis(eptr.dtype)
+    idx_t = lib._IDX_T
+    ne, nv, nparts, ncommon, objval = (
+        idx_t(eptr.size - 1),
+        idx_t(nv),
+        idx_t(nparts),
+        idx_t(ncommon),
+        idx_t(0),
+    )
+    npart = np.empty(nv, dtype=eptr.dtype)
+    epart = np.empty(ne, dtype=eptr.dtype)
+    lib.PartMeshDual(
+        c.byref(ne),
+        c.byref(nv),
+        _array_ptr(eptr, idx_t),
+        _array_ptr(eind, idx_t),
+        _array_ptr(vwgt, idx_t),
+        _array_ptr(vsize, idx_t),
+        c.byref(ncommon),
+        c.byref(nparts),
+        _array_ptr(tpwgts, c.c_float),
+        _array_ptr(opts, idx_t),
+        c.byref(objval),
+        _array_ptr(epart, idx_t),
+        _array_ptr(npart, idx_t),
+    )
+    return objval.value, epart, npart
