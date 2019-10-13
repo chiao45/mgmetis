@@ -141,6 +141,13 @@ def process_mesh(*cells, **kw):
             raise ValueError("index must start with 0 or 1")
         if min_nv:
             eptr += 1
+    total_len = eptr[-1] - eptr[0]
+    if total_len < eind.size:
+        raise ValueError("fatal mesh eind length issue")
+    if total_len > eind.size:
+        import warnings  # pylint: disable=import-outside-toplevel
+
+        warnings.warn("eind has more entries than eptr[-1]-eptr[0]")
     nv = kw.get("nv", -1)
     if nv < 0:
         # NOTE: compute number of vertices
@@ -148,6 +155,45 @@ def process_mesh(*cells, **kw):
     if eptr.dtype.alignment < 4:
         return np.asarray(eptr, dtype=np.int32), np.asarray(eind, dtype=np.int32), nv
     return eptr, eind, nv
+
+
+def process_graph(xadj, adjncy):
+    """Process user input graph to ensure numpy arrays
+
+    Parameters
+    ----------
+    xadj : array_like
+        1D list of starting positions of the graph nodes
+    adjncy : array_like
+        1D list of adjacent node list, splitted by `xadj` for each node
+
+    Returns
+    -------
+    xadj : np.ndarray
+        Numpy array of `xadj`
+    adjncy : np.ndarray
+        Numpy array of `adjncy`
+    nv : int
+        Number of vertices
+
+    See Also
+    --------
+    process_mesh
+    """
+    xadj = np.asarray(xadj).reshape(-1)
+    if not np.issubdtype(xadj.dtype, np.integer):
+        xadj = np.asarray(xadj, dtype=int)
+    if xadj[0] not in (0, 1):
+        raise ValueError("the first value of xadj must be 0 (C) or 1 (Fortran)")
+    adjncy = np.asarray(adjncy, dtype=xadj.dtype).reshape(-1)
+    total_len = xadj[-1] - xadj[0]
+    if total_len < adjncy.size:
+        raise ValueError("fatal mesh adjncy length issue")
+    if total_len > adjncy.size:
+        import warnings  # pylint: disable=import-outside-toplevel
+
+        warnings.warn("adjncy has more entries than xadj[-1]-xadj[0]")
+    return xadj, adjncy, xadj.size - 1
 
 
 def as_pointer(ar):
