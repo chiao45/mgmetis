@@ -7,6 +7,8 @@
 
 import numpy as np
 
+from .enums import ERROR
+
 
 def get_so(lib):
     """Get the shared object inside `_cython`
@@ -54,7 +56,11 @@ class MetisError(RuntimeError):
     """
 
 
-METIS_ERRORS = {-2: MetisInputError, -3: MetisMemoryError, -4: MetisError}
+METIS_ERRORS = {
+    ERROR.INPUT.value: MetisInputError,
+    ERROR.MEMORY.value: MetisMemoryError,
+    ERROR.ERROR.value: MetisError,
+}
 """A exception factory for handling C Metis calls
 
 Examples
