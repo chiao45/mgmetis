@@ -19,7 +19,7 @@ through ``ctypes``.
 Installation
 ------------
 
-`mgmetis` can be installed via PyPI and pip, i.e.,
+`mgmetis` can be installed via ``pip``, i.e.,
 
 .. code:: console
 
