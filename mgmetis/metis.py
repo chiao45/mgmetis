@@ -9,7 +9,24 @@ import ctypes as c
 
 import numpy as np
 
-from .utils import get_so, METIS_ERRORS, process_mesh
+from .enums import OPTION
+from .utils import (
+    get_so,
+    METIS_ERRORS,
+    process_mesh,
+    process_graph,
+    as_pointer,
+    get_or_create_workspace,
+    try_get_input_array,
+)
+
+__all__ = [
+    "get_default_options",
+    "part_graph_recursize",
+    "part_graph_kway",
+    "part_mesh_nodal",
+    "part_mesh_dual",
+]
 
 
 def _handle_metis_ret(ret, func, args):
@@ -87,7 +104,7 @@ class _LibMetisModule:
         c_func.errcheck = _handle_metis_ret
         setattr(cls, fname, c_func)
         _all.append(fname)
-        return _all  # XXX: take advantage of mutable input behavior
+        return _all  # NOTE: take advantage of mutable default input behavior
 
 
 class _Lib32MetisModule(_LibMetisModule):
@@ -124,101 +141,467 @@ def _get_libmetis(dtype):
     return _libmetis64
 
 
-def _array_ptr(ar, ct):
-    # helper to get the pointer of an array
-    # NOTE: None is NULL pointer
-    return ar.ctypes.data_as(c.POINTER(ct)) if ar is not None else None
+__default_int32_options__ = -1 * np.ones(40, dtype=np.int32)
+"""Raw data for default option values for 32bit METIS"""
+
+__default_int64_options__ = -1 * np.ones(40, dtype=np.int64)
+"""Raw data for default option values for 64bit METIS"""
 
 
-def get_default_opts(dtype="intc"):
-    dtype = np.dtype(dtype)
-    if not np.issubdtype(dtype, np.integer):
-        raise ValueError("dtype must be integer")
-    if not dtype.alignment < 4:
-        raise ValueError("integer type must be int32 or int64")
-    # NOTE: METIS_NOPTIONS=40
-    lib = _get_libmetis(dtype)
-    opts = np.empty(40, dtype=dtype)
-    lib.SetDefaultOptions(opts.ctypes.data_as(c.POINTER(lib._IDX_T)))
+def _get_default_raw_opts(kw, dtype):
+    # Helper function to extract options (if exists) from user input
+    # or return the raw default one
+    opts = kw.get("options", None)
+    opts = np.asarray(
+        opts
+        if opts is not None
+        else (
+            __default_int32_options__.copy()
+            if dtype == np.int32
+            else __default_int64_options__.copy()
+        ),
+        dtype=dtype,
+    )
+    assert opts.size >= 40, "option length needs to be greater than 40"
     return opts
 
 
-def part_graph_recursize(*args):
-    pass
+def get_default_options(dtype="intc"):
+    """Create an array of length 40 with default option values (-1)
+
+    Parameters
+    ----------
+    dtype : np.dtype, optional
+        Data type, must be either np.int32 (or equiv.) or np.int64 (or equiv.)
+
+    Returns
+    -------
+    np.ndarray
+        An integer array of length 40 with values -1 (default METIS options)
+
+    Notes
+    -----
+
+    The returned array is a subclass of np.ndarray with an additional member
+    method `revert_default_options`, whose sole purpose is to reset all entries
+    to be -1, i.e.,
+
+    >>> opts[:] = -1
+
+    Examples
+    --------
+
+    >>> from mgmetis import metis
+    >>> opts = metis.get_default_options()
+    >>> opts
+    Options([-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+         -1, -1, -1, -1, -1, -1, -1, -1], dtype=int32)
+    >>> opts.revert_default_options()
+
+    All interfaces of `mgmetis` accept standard np.ndarray, so you can manually
+    create option arrays by
+
+    >>> opts = -1 * np.ones(40, dtype=int)
+
+    See Also
+    --------
+    enums : `mgmetis` METIS enum interface
+    enums.OPTION
+    """
+    dtype = np.dtype(dtype)
+    if not np.issubdtype(dtype, np.integer):
+        raise ValueError("dtype must be integer")
+    if dtype.alignment < 4:
+        raise ValueError("integer type must be int32 or int64")
+    # NOTE: METIS_NOPTIONS=40
+    opts = np.empty(40, dtype=dtype)
+
+    class Options(np.ndarray):
+        def revert_default_options(self):
+            """Revert the default options
+
+            .. note::
+                This function internally does **NOT** call
+                ``METIS_SetDefaultOptions``.
+            """
+            self[:] = -1
+
+    opts = opts.view(Options)  # NOTE: numpy simple subclass
+    opts.revert_default_options()
+    return opts
 
 
-def part_graph_kway(*args):
-    pass
-
-
-def part_mesh_nodal(cells, nparts, **kw):
+def _part_graph(kernel, nparts, xadj, adjncy, **kw):  # pylint: disable=too-many-locals
+    # NOTE: unified implementation of graph partitioning
     if nparts <= 0:
         raise ValueError("invalid nparts")
-    nv = kw.get("nv", -1)
-    if nv == 0:
-        raise ValueError("cannot be empty mesh")
-    eptr, eind, nv = process_mesh(cells, nv)
-    vwgt = vsize = tpwgts = None
-    opts = np.asarray(
-        kw.get("options", None) or get_default_opts(eptr.dtype), dtype=eptr.dtype
+    ncon = kw.get("ncon", 1)
+    if ncon < 1:
+        raise ValueError("invalid ncon, should be at least 1")
+    xadj, adjncy, nv = process_graph(xadj, adjncy)
+    vwgt = try_get_input_array(kw, "vwgt", nv * ncon, xadj.dtype)
+    vsize = try_get_input_array(kw, "vsize", nv, xadj.dtype)
+    adjwgt = try_get_input_array(kw, "adjwgt", xadj[-1] - xadj[0], xadj.dtype)
+    tpwgts = try_get_input_array(kw, "tpwgts", nparts * ncon, np.float32)
+    ubvec = try_get_input_array(kw, "ubvec", ncon, np.float32)
+    opts = _get_default_raw_opts(kw, xadj.dtype)
+    if xadj[0] == 1:
+        # NOTE: fortran
+        opts[OPTION.NUMBERING] = 1
+    lib = _get_libmetis(xadj.dtype)
+    idx_t = lib._IDX_T
+    nv, ncon, nparts, objval = idx_t(nv), idx_t(ncon), idx_t(nparts), idx_t(0)
+    part = get_or_create_workspace(kw, "part", nv.value, xadj.dtype)
+    getattr(lib, kernel)(
+        c.byref(nv),
+        c.byref(ncon),
+        as_pointer(xadj),
+        as_pointer(adjncy),
+        as_pointer(vwgt),
+        as_pointer(vsize),
+        as_pointer(adjwgt),
+        c.byref(nparts),
+        as_pointer(tpwgts),
+        as_pointer(ubvec),
+        as_pointer(opts),
+        c.byref(objval),
+        as_pointer(part),
     )
+    return objval.value, part
+
+
+def part_graph_recursize(nparts, xadj, adjncy, **kw):
+    """Partition a graph into k parts with `multilevel recursive bisection`
+
+    .. note::
+        This function wraps around original ``METIS_PartGraphRecursive``. For
+        more details, please refer to the official
+        `documentation <http://glaros.dtc.umn.edu/gkhome/metis/metis/download>`_
+        section 5.8, `Graph partitioning routines`.
+        Also, be aware that most documentations are copied from the original
+        source for the convenience.
+
+    Parameters
+    ----------
+    nparts : int
+        Number of partitions, must be positive
+    xadj, adjncy: np.ndarray
+        The adjacency structure (CSR) described in section 5.5 in documentation.
+    options : np.ndarray, optional
+        Control parameters in section 5.4. If not given, then using default
+        values.
+    ncon : int, optional
+        The number of balancing constraints. It should be at least 1 (default).
+
+    Returns
+    -------
+    objval : int
+        Upon successful completion, this variable stores the edge-cut or the
+        total communication volume of the partitioning solution. The value
+        returned depends on the partitioning’s objective function.
+    part : np.ndarray
+        This is a vector of size nvtxs that upon successful completion stores
+        the partition vector of the graph. The numbering of this vector starts
+        from either 0 or 1, depending on the value of
+        `options[OPTION.NUMBERING]`.
+
+    Other Parameters
+    ----------------
+    vwgt, vsize, adjwgt : np.ndarray, optional
+        See section 5.5 in the documentation, default is ``None``, indicating
+        using the default behaviors inside the C routine.
+    tpwgts : np.ndarray, optional
+        This is an array of size nparts×ncon that specifies the desired weight
+        for each partition and constraint. Default is ``None``.
+    ubvec : np.ndarray, optional
+        This is an array of size ncon that specifies the allowed load imbalance
+        tolerance for each constraint. See the doc.
+
+    See Also
+    --------
+    part_graph_kway
+    """
+    return _part_graph("PartGraphRecursive", nparts, xadj, adjncy, **kw)
+
+
+def part_graph_kway(nparts, xadj, adjncy, **kw):
+    """Partition a graph into k parts with `multilevel k-way partitioning`
+
+    .. note::
+        This function wraps around original ``METIS_PartGraphKway``. For
+        more details, please refer to the official
+        `documentation <http://glaros.dtc.umn.edu/gkhome/metis/metis/download>`_
+        section 5.8, `Graph partitioning routines`.
+        Also, be aware that most documentations are copied from the original
+        source for the convenience.
+
+    Parameters
+    ----------
+    nparts : int
+        Number of partitions, must be positive
+    xadj, adjncy: np.ndarray
+        The adjacency structure (CSR) described in section 5.5 in documentation.
+    options : np.ndarray, optional
+        Control parameters in section 5.4. If not given, then using default
+        values.
+    ncon : int, optional
+        The number of balancing constraints. It should be at least 1 (default).
+
+    Returns
+    -------
+    objval : int
+        Upon successful completion, this variable stores the edge-cut or the
+        total communication volume of the partitioning solution. The value
+        returned depends on the partitioning’s objective function.
+    part : np.ndarray
+        This is a vector of size nvtxs that upon successful completion stores
+        the partition vector of the graph. The numbering of this vector starts
+        from either 0 or 1, depending on the value of
+        `options[OPTION.NUMBERING]`.
+
+    Other Parameters
+    ----------------
+    vwgt, vsize, adjwgt : np.ndarray, optional
+        See section 5.5 in the documentation, default is ``None``, indicating
+        using the default behaviors inside the C routine.
+    tpwgts : np.ndarray, optional
+        This is an array of size nparts×ncon that specifies the desired weight
+        for each partition and constraint. Default is ``None``.
+    ubvec : np.ndarray, optional
+        This is an array of size ncon that specifies the allowed load imbalance
+        tolerance for each constraint. See the doc.
+
+    See Also
+    --------
+    part_graph_recursize
+    """
+    return _part_graph("PartGraphKway", nparts, xadj, adjncy, **kw)
+
+
+def part_mesh_nodal(nparts, *cells, **kw):  # pylint: disable=too-many-locals
+    """Partition a mesh based on cutting nodes
+
+    .. note::
+        This function wraps around original ``METIS_PartMeshNodal``. For more,
+        please refer to the official
+        `documentation <http://glaros.dtc.umn.edu/gkhome/metis/metis/download>`_
+        section 5.9, `Mesh partitioning routines`.
+        Also, be aware that most documentations are copied from the original
+        source for the convenience.
+
+    Parameters
+    ----------
+    nparts : int
+        Number of partitions, must be positive
+    *cells : positional arguments
+        This can be either the compressed mesh input, i.e., `eptr` and `eind`
+        or a list of cells, which will be automatically converted into proper
+        `eptr` and `eind` arrays. For more about the input mesh structure,
+        refer to section 5.6 in the documentation.
+    nv : int, optional
+        Total number of vertices in mesh, if not specified or negative, then
+        the routine will compute it automatically.
+    options : np.ndarray, optional
+        Control parameters as documented in the documentation, if not provided,
+        the the default options are used. For more, see section 5.4 in the
+        official documentation.
+
+    Returns
+    -------
+    objval : int
+        Upon successful completion, this variable stores either the edgecut or
+        the total communication volume of the nodal graph’s partitioning.
+    epart : np.ndarray
+        This is a vector of size ne that upon successful completion stores the
+        partition vector for the elements of the mesh. The numbering of this
+        vector starts from either 0 or 1, depending on the value of
+    npart : np.ndarray
+        This is a vector of size nn that upon successful completion stores the
+        partition vector for the nodes of the mesh. The numbering of this vector
+        starts from either 0 or 1, depending on the value of
+        `options[OPTION.NUMBERING]`.
+
+    Other Parameters
+    ----------------
+    vwgt : np.ndarray, optional
+        An array of size `nv` specifying the weights of the nodes. A ``None``
+        value (default) can be passed to indicate that all nodes have an equal
+        weight.
+    vsize : np.ndarray, optional
+        An array of size `nv` specifying the size of the nodes that is used for
+        computing the total communication volume as described in Section 5.7.
+        A ``None`` value (default) can be passed when the objective is cut or
+        when all nodes have an equal size.
+    tpwgts : np.ndarray, optional
+        This is an array of size `nparts` that specifies the desired weight for
+        each partition. The target partition weight for the `i`-th partition is
+        specified at `tpwgts[i]` (the numbering for the partitions starts from
+        0). `sum(tpwgts)` must be 1.0. A ``None`` value (default) can be passed
+        to indicate that the graph should be equally divided among the
+        partitions. Also, be aware this array is real data type.
+    epart, npart : np.ndarray, optional
+        User workspace of output `epart` and `npart`, respectively.
+
+    See Also
+    --------
+    get_default_options
+    part_mesh_dual : element-wise partitioning for a given mesh
+    """
+    if nparts <= 0:
+        raise ValueError("invalid nparts")
+    eptr, eind, nv = process_mesh(*cells, nv=kw.get("nv", -1))
+    opts = _get_default_raw_opts(kw, eptr.dtype)
+    if eptr[0] == 1:
+        # NOTE: fortran
+        opts[OPTION.NUMBERING] = 1
     lib = _get_libmetis(eptr.dtype)
     idx_t = lib._IDX_T
     ne, nv, nparts, objval = (idx_t(eptr.size - 1), idx_t(nv), idx_t(nparts), idx_t(0))
-    npart = np.empty(nv, dtype=eptr.dtype)
-    epart = np.empty(ne, dtype=eptr.dtype)
+    # outputs
+    npart = get_or_create_workspace(kw, "npart", nv.value, eptr.dtype)
+    epart = get_or_create_workspace(kw, "epart", ne.value, eptr.dtype)
+    # inputs
+    vwgt = try_get_input_array(kw, "vwgt", nv.value, eptr.dtype)
+    vsize = try_get_input_array(kw, "vsize", nv.value, eptr.dtype)
+    tpwgts = try_get_input_array(kw, "tpwgts", nparts.value, np.float32)
     lib.PartMeshNodal(
         c.byref(ne),
         c.byref(nv),
-        _array_ptr(eptr, idx_t),
-        _array_ptr(eind, idx_t),
-        _array_ptr(vwgt, idx_t),
-        _array_ptr(vsize, idx_t),
+        as_pointer(eptr),
+        as_pointer(eind),
+        as_pointer(vwgt),
+        as_pointer(vsize),
         c.byref(nparts),
-        _array_ptr(tpwgts, c.c_float),
-        _array_ptr(opts, idx_t),
+        as_pointer(tpwgts),
+        as_pointer(opts),
         c.byref(objval),
-        _array_ptr(epart, idx_t),
-        _array_ptr(npart, idx_t),
+        as_pointer(epart),
+        as_pointer(npart),
     )
     return objval.value, epart, npart
 
 
-def part_mesh_dual(cells, nparts, ncommon=1, **kw):
+def part_mesh_dual(nparts, *cells, **kw):  # pylint: disable=too-many-locals
+    """Partition a mesh based on cutting elements
+
+    .. note::
+        This function wraps around original ``METIS_PartMeshDual``. For more,
+        please refer to the official
+        `documentation <http://glaros.dtc.umn.edu/gkhome/metis/metis/download>`_
+        section 5.9, `Mesh partitioning routines`.
+        Also, be aware that most documentations are copied from the original
+        source for the convenience.
+
+    Parameters
+    ----------
+    nparts : int
+        Number of partitions, must be positive
+    *cells : positional arguments
+        This can be either the compressed mesh input, i.e., `eptr` and `eind`
+        or a list of cells, which will be automatically converted into proper
+        `eptr` and `eind` arrays. For more about the input mesh structure,
+        refer to section 5.6 in the documentation.
+    nv : int, optional
+        Total number of vertices in mesh, if not specified or negative, then
+        the routine will compute it automatically.
+    ncommon : int, optional
+        Specifies the number of common nodes that two elements must have in
+        order to put an edge between them in the dual graph. Given two elements
+        :math:`e_1` and :math:`e_2`, containing :math:`n_1` and :math:`n_2`
+        nodes, respectively, then an edge will connect the vertices in the dual
+        graph corresponding to :math:`e_1` and :math:`e_2` if the number of
+        common nodes between them is greater than or equal to
+        :math:`min(ncommon, n_1 − 1, n_2 − 1)`. The default value is 1,
+        indicating that two elements will be connected via an edge as long as
+        they share one node. However, this will tend to create too many edges
+        (increasing the memory and time requirements of the partitioning). The
+        user should select higher values that are better suited for the element
+        types of the mesh that wants to partition. For example, for tetrahedron
+        meshes, ncommon should be 3, which creates an edge between two tets when
+        they share a triangular face (i.e., 3 nodes).
+    options : np.ndarray, optional
+        Control parameters as documented in the documentation, if not provided,
+        the the default options are used. For more, see section 5.4 in the
+        official documentation.
+
+    Returns
+    -------
+    objval : int
+        Upon successful completion, this variable stores either the edgecut or
+        the total communication volume of the nodal graph’s partitioning.
+    epart : np.ndarray
+        This is a vector of size ne that upon successful completion stores the
+        partition vector for the elements of the mesh. The numbering of this
+        vector starts from either 0 or 1, depending on the value of
+    npart : np.ndarray
+        This is a vector of size nn that upon successful completion stores the
+        partition vector for the nodes of the mesh. The numbering of this vector
+        starts from either 0 or 1, depending on the value of
+        `options[OPTION.NUMBERING]`.
+
+    Other Parameters
+    ----------------
+    vwgt : np.ndarray, optional
+        An array of size `ne` specifying the weights of the elements. A ``None``
+        value (default) can be passed to indicate that all elements have an
+        equal weight.
+    vsize : np.ndarray, optional
+        An array of size `ne` specifying the size of the elements that is used
+        for computing the total communication volume as described in Section 5.7.
+        A ``None`` value (default) can be passed when the objective is cut or
+        when all elements have an equal size.
+    tpwgts : np.ndarray, optional
+        This is an array of size `nparts` that specifies the desired weight for
+        each partition. The target partition weight for the `i`-th partition is
+        specified at `tpwgts[i]` (the numbering for the partitions starts from
+        0). `sum(tpwgts)` must be 1.0. A ``None`` value (default) can be passed
+        to indicate that the graph should be equally divided among the
+        partitions. Also, be aware this array is real data type.
+    epart, npart : np.ndarray, optional
+        User workspace of output `epart` and `npart`, respectively.
+
+    See Also
+    --------
+    get_default_options
+    part_mesh_nodal : node-wise partitioning for a given mesh
+    """
     if nparts <= 0:
         raise ValueError("invalid nparts")
-    nv = kw.get("nv", -1)
-    if nv == 0:
-        raise ValueError("cannot be empty mesh")
-    eptr, eind, nv = process_mesh(cells, nv)
-    vwgt = vsize = tpwgts = None
-    opts = np.asarray(
-        kw.get("options", None) or get_default_opts(eptr.dtype), dtype=eptr.dtype
-    )
+    eptr, eind, nv = process_mesh(*cells, nv=kw.get("nv", -1))
+    opts = _get_default_raw_opts(kw, eptr.dtype)
+    if eptr[0] == 1:
+        # NOTE: fortran
+        opts[OPTION.NUMBERING] = 1
     lib = _get_libmetis(eptr.dtype)
     idx_t = lib._IDX_T
     ne, nv, nparts, ncommon, objval = (
         idx_t(eptr.size - 1),
         idx_t(nv),
         idx_t(nparts),
-        idx_t(ncommon),
+        idx_t(kw.get("ncommon", 1)),
         idx_t(0),
     )
-    npart = np.empty(nv, dtype=eptr.dtype)
-    epart = np.empty(ne, dtype=eptr.dtype)
+    # outputs
+    npart = get_or_create_workspace(kw, "npart", nv.value, eptr.dtype)
+    epart = get_or_create_workspace(kw, "epart", ne.value, eptr.dtype)
+    # inputs
+    vwgt = try_get_input_array(kw, "vwgt", ne.value, eptr.dtype)
+    vsize = try_get_input_array(kw, "vsize", ne.value, eptr.dtype)
+    tpwgts = try_get_input_array(kw, "tpwgts", nparts.value, np.float32)
     lib.PartMeshDual(
         c.byref(ne),
         c.byref(nv),
-        _array_ptr(eptr, idx_t),
-        _array_ptr(eind, idx_t),
-        _array_ptr(vwgt, idx_t),
-        _array_ptr(vsize, idx_t),
+        as_pointer(eptr),
+        as_pointer(eind),
+        as_pointer(vwgt),
+        as_pointer(vsize),
         c.byref(ncommon),
         c.byref(nparts),
-        _array_ptr(tpwgts, c.c_float),
-        _array_ptr(opts, idx_t),
+        as_pointer(tpwgts),
+        as_pointer(opts),
         c.byref(objval),
-        _array_ptr(epart, idx_t),
-        _array_ptr(npart, idx_t),
+        as_pointer(epart),
+        as_pointer(npart),
     )
     return objval.value, epart, npart
