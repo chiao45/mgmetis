@@ -218,7 +218,7 @@ Enable METIS in Cython
 Each of the METIS routine has a Cython interface, whose naming convention is
 samilar as it's in ``ctypes`` mode. *mgmetis* resolves the issues regarding
 linking to METIS. In addition, each of the Cython function is defined with
-`nogil` specifier.
+``nogil`` specifier.
 
 The following code shows how to access the ``METIS_PartGraphRecursive``
 
