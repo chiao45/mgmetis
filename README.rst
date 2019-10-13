@@ -57,7 +57,7 @@ Give a a directed graph based on the following structure::
     |   |   |
     6---7---8
 
-We can have the set up a single graph representation, which looks like
+We can have the set up a simple graph representation, which looks like
 
 .. code-block:: python
 
@@ -192,7 +192,7 @@ We now need to access the ctype interface in *mgmetis*
 
 .. code-block:: python
 
-    >>> from mgmetis.metis import libmetis64
+    >>> from mgmetis.metis import libmetis64  # libmetis for 32bit int
     >>> libmetis64.PartGraphRecursive(
     ...     c.byref(nv),
     ...     c.byref(ncon),
@@ -212,22 +212,30 @@ We now need to access the ctype interface in *mgmetis*
 For more details for ``ctypes``, please refer to https://docs.python.org/3.8/library/ctypes.html.
 Also, take a look at `np.ndarray.ctypes <https://docs.scipy.org/doc/numpy/reference/generated/numpy.ndarray.ctypes.html>`_.
 
-Enable *mgmetis* in Cython
-```````````````````````````
+Enable METIS in Cython
+```````````````````````
 
 Each of the METIS routine has a Cython interface, whose naming convention is
 samilar as it's in ``ctypes`` mode. *mgmetis* resolves the issues regarding
-linking to METIS.
+linking to METIS. In addition, each of the Cython function is defined with
+`nogil` specifier.
+
+The following code shows how to access the ``METIS_PartGraphRecursive``
 
 .. code-block:: cython
 
     cimport mgmetis.libmetis as metis  # 32 bit
     # then each of the function in METIS public domain has a Cython interface
-    # without prefix METIS_, in addition, each function is `nogil` specified.
+    # without prefix METIS_
     cdef int ret = metis.PartGraphRecursive(...)
+    if ret != metis.OK:
+        raise ValueError
 
 When you compile your Cython code, you don't need to worry about linking to
-METIS, Python will ``dlopen`` the symbols in runtime.
+METIS, Python will load the correct symbol in runtime.
+
+Work with MPI
+`````````````
 
 License
 -------
