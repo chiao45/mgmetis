@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Tabulation of enumerations used in METIS
+"""Tabulation of enumerations used in METIS and ParMETIS
 
 .. note::
     For more information, please consult the original documentation at
-    http://glaros.dtc.umn.edu/gkhome/metis/metis/download
+    http://glaros.dtc.umn.edu/gkhome/metis/metis/download and
 
 .. module:: mgmetis.enums
 .. moduleauthor:: Qiao Chen, <benechiao@gmail.com>
@@ -22,6 +22,11 @@ __all__ = [
     "RTYPE",
     "DBG",
     "OBJTYPE",
+    "ParOP",
+    "ParMTYPE",
+    "ParSRTYPE",
+    "ParPSR",
+    "ParDBGLVL",
 ]
 
 
@@ -135,7 +140,7 @@ class RTYPE(IntEnum):
 
 @unique
 class DBG(IntEnum):
-    """Debug Levels, i.e., `mdbglvl_et`
+    """Debug Levels, i.e., `met`
     """
 
     INFO = 1
@@ -158,3 +163,55 @@ class OBJTYPE(IntEnum):
     CUT = 0
     VOL = 1
     NODE = 2
+
+
+@unique
+class ParOP(IntEnum):
+    """Operation type codes (ParMETIS), i.e., `pmoptype_et`
+    """
+
+    KMETIS = 0
+    GKMETIS = auto()
+    GMETIS = auto()
+    RMETIS = auto()
+    AMETIS = auto()
+    OMETIS = auto()
+    M2DUAL = auto()
+    MKMETIS = auto()
+
+
+@unique
+class ParMTYPE(IntEnum):
+    """Matching type"""
+
+    LOCAL = 1
+    GLOBAL = 2
+
+
+@unique
+class ParSRTYPE(IntEnum):
+    """Separator refinement types"""
+
+    GREEDY = 1
+    TWO_PHASE = 2
+
+
+@unique
+class ParPSR(IntEnum):
+    """Coupling types for ParMETIS_V3_RefineKway & ParMETIS_V3_AdaptiveRepart"""
+
+    COUPLED = 1
+    UNCOUPLED = 2
+
+
+@unique
+class ParDBGLVL(IntEnum):
+    """Debug levels (fields should be ORed)"""
+
+    TIME = 1
+    INFO = 2
+    PROGRESS = 4
+    REFINEINFO = 8
+    MATCHINFO = 16
+    RMOVEINFO = 32
+    REMAP = 64
