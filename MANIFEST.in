@@ -4,7 +4,8 @@ include requirements.txt
 include MANIFEST.in
 graft mgmetis
 graft tests
-graft docs 
+graft examples
+recursive-exclude mgmetis/_cython *.c
 global-exclude __pycache__
 global-exclude *.so
 global-exclude *.py[co]
