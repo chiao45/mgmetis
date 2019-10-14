@@ -237,6 +237,37 @@ METIS, Python will load the correct symbol in runtime.
 Work with MPI
 `````````````
 
+The native Python mode supports parallel partitioning of a static graph or
+mesh. The underlying routines are:
+
+1. ``ParMETIS_V3_PartKway``,
+2. ``ParMETIS_V3_PartGeomKway``,
+3. ``ParMETIS_V3_PartGeom``, and
+4. ``ParMETIS_V3_PartMeshKway``.
+
+Their usage is similar to the serial version, please take a look at the unit
+testing scripts.
+
+A complete support of ParMETIS can be done (for now) via either ``ctypes``
+mode or Cython mode. For ``ctypes`` mode
+
+.. code-block:: python
+
+    from mgmetis.parmetis import libparmetis  # libparmetis64 for 64bit
+    help(libparmetis)
+
+and for the Cython mode
+
+.. code-block:: cython
+
+    cimport mgmetis.parmetis as parmetis  # mgmetis.parmetis64 for 64 bit
+    cdef int ret = parmetis.PartKway(...)
+
+Notice that for Cython mode, you will need to access *mpi4py* Cython interface.
+It will, then, require you to add its path during specifying ``Extension``.
+The compiler needs to be set to *mpicc* and the linker needs to be it as well
+(though, this is not needed if you supply linking to ``libmpi.so`` manually.)
+
 License
 -------
 
