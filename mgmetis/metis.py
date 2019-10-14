@@ -26,6 +26,7 @@ __all__ = [
     "part_graph_kway",
     "part_mesh_nodal",
     "part_mesh_dual",
+    "node_nd",
 ]
 
 
@@ -605,3 +606,53 @@ def part_mesh_dual(nparts, *cells, **kw):  # pylint: disable=too-many-locals
         as_pointer(npart),
     )
     return objval.value, epart, npart
+
+
+def node_nd(xadj, adjncy, **kw):
+    """Sparse matrix reordering with nested dissection to reduce fills
+
+    Reducing fills with by using nested dissection reordering algorithm.
+
+    Parameters
+    ----------
+    xadj, adjncy : np.ndarray
+        CSR graph representation of a CSR/CSC matrix
+    options : np.ndarray, optional
+        Control parameters, if not specified, then the default values are
+        used.
+
+    Returns
+    -------
+    perm : np.ndarray
+        Permutation matrix :math:`P`
+    iperm : np.ndarray
+        Inverse permutation matrix :math:`P^T`
+
+    Other Parameters
+    ----------------
+    vwgt : np.ndarray, optional
+        Vertex weights, default is None, which indicates equal weights.
+    perm, iperm : np.ndarray, optional
+        User input of workspace for `perm` and `iperm`
+    """
+    xadj, adjncy, nv = process_graph(xadj, adjncy)
+    vwgt = try_get_input_array(kw, "vwgt", nv, xadj.dtype)
+    opts = _get_default_raw_opts(kw, xadj.dtype)
+    if xadj[0] == 1:
+        # NOTE: Fortran
+        opts[OPTION.NUMBERING] = 1
+    # outputs
+    perm = get_or_create_workspace(kw, "perm", nv, xadj.dtype)
+    iperm = get_or_create_workspace(kw, "iperm", nv, xadj.dtype)
+    lib = _get_libmetis(xadj.dtype)
+    nv = lib._IDX_T(nv)
+    lib.NodeND(
+        c.byref(nv),
+        as_pointer(xadj),
+        as_pointer(adjncy),
+        as_pointer(vwgt),
+        as_pointer(opts),
+        as_pointer(perm),
+        as_pointer(iperm),
+    )
+    return perm, iperm
