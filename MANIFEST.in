@@ -2,6 +2,8 @@ include README.rst
 include LICENSE
 include requirements.txt
 include MANIFEST.in
+include conf.py
+include build_ext.py
 graft mgmetis
 graft tests
 graft examples
