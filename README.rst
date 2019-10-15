@@ -1,6 +1,12 @@
 MGMETIS---Mesh & Graph METIS Partitioning
 =========================================
 
+.. image:: https://travis-ci.org/chiao45/mgmetis.svg?branch=master
+    :target: https://travis-ci.org/chiao45/mgmetis
+.. image:: https://img.shields.io/pypi/v/mgmetis.svg?branch=master
+    :target: https://pypi.org/project/mgmetis/
+.. image:: https://img.shields.io/pypi/pyversions/mgmetis.svg?style=flat-square
+    :target: https://pypi.org/project/mgmetis/
 .. image:: https://img.shields.io/badge/code%20style-black-000000.svg
     :target: https://github.com/ambv/black
 
