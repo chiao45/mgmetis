@@ -1,0 +1,28 @@
+dist: xenial
+
+language: python
+
+branches:
+  only:
+  - master
+
+python:
+  - '3.6'
+  - '3.7'
+  - '3.8-dev'
+
+addons:
+  apt:
+    packages:
+      - python3-dev
+      - openmpi-bin
+      - libopenmpi-dev
+
+before_install:
+  - pip install -r requirements.txt
+
+install:
+  - pip -vvv install .
+
+script:
+  - cd tests/ && mpiexec -np 2 py.test -v
