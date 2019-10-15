@@ -264,9 +264,8 @@ and for the Cython mode
     cdef int ret = parmetis.PartKway(...)
 
 Notice that for Cython mode, you will need to access *mpi4py* Cython interface.
-It will, then, require you to add its path during specifying ``Extension``.
-The compiler needs to be set to *mpicc* and the linker needs to be it as well
-(though, this is not needed if you supply linking to ``libmpi.so`` manually.)
+It will, then, require you to add its path during specifying ``Extension``, and
+the compiler needs to be set to *mpicc*.
 
 License
 -------
