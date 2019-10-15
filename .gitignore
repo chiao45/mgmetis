@@ -108,3 +108,4 @@ venv.bak/
 
 # customized for mgmetis
 mgmetis/_cython/*.c
+examples/cython/*.c

@@ -12,12 +12,12 @@ import numpy as np
 from .enums import OPTION
 from .utils import (
     get_so,
-    METIS_ERRORS,
     process_mesh,
     process_graph,
     as_pointer,
     get_or_create_workspace,
     try_get_input_array,
+    _handle_metis_ret,
 )
 
 __all__ = [
@@ -28,14 +28,6 @@ __all__ = [
     "part_mesh_dual",
     "node_nd",
 ]
-
-
-def _handle_metis_ret(ret, func, args):
-    try:
-        raise METIS_ERRORS[ret]("{}:{}:{}".format(func.__name__, ret, args))
-    except KeyError:
-        # NOTE: METIS_OK
-        pass
 
 
 class _LibMetisModule:

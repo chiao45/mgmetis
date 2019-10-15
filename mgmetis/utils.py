@@ -58,7 +58,7 @@ class MetisError(RuntimeError):
     """
 
 
-METIS_ERRORS = {
+_METIS_ERRORS = {
     ERROR.INPUT.value: MetisInputError,
     ERROR.MEMORY.value: MetisMemoryError,
     ERROR.ERROR.value: MetisError,
@@ -70,10 +70,19 @@ Examples
 
 >>> ret = 1  # METIS_OK
 >>> try:
-...     raise METIS_ERRORS[1]("meh")
+...     raise _METIS_ERRORS[1]("meh")
 ... except KeyError:
 ...     pass
 """
+
+
+def _handle_metis_ret(ret, func, args):
+    # helper for handling metis function return
+    try:
+        raise _METIS_ERRORS[ret]("{}:{}:{}".format(func.__name__, ret, args))
+    except KeyError:
+        # NOTE: METIS_OK
+        pass
 
 
 def process_mesh(*cells, **kw):
