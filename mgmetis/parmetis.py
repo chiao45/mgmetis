@@ -23,6 +23,7 @@ from .utils import (
 
 class _LibParMetisModule:
     _IDX_T = c.c_int32
+    _REAL_T = c.c_float
 
     def __new__(cls, lib):
         try:
@@ -310,6 +311,172 @@ def part_kway(nparts, xadj, adjncy, vtxdist=None, comm=None, **kw):
         )
     return edgecut.value, part
 
+def adaptive_repart_kway(nparts, xadj, adjncy, part, vtxdist=None, vsize=None, itr=1000.0, comm=None, **kw):
+    """ This function is the entry point of the parallel multilevel local diffusion
+    algorithm. It uses parallel undirected diffusion followed by adaptive k-way 
+    refinement. This function utilizes local coarsening.
+
+    Parameters
+    ----------
+    nparts : int
+        Number of partitions
+    xadj : np.ndarray
+        Local range of CSR graph starting position array
+    adjncy : np.ndarray
+        Local potion of CSR adjacent list with global indices
+    part: np.ndarray
+        Previous partition
+    vtxdist : np.ndarray, optional
+        Global range array, see ParMETIS manual section 4.2.1, if not specified
+        then will compute using MPI collection
+    itr: float
+        This parameter describes the ratio of inter-processor communication time compared 
+        to data redistribution time. It should be set between 0.000001 and 1000000.0. 
+        If ITR is set high, a repartitioning with a low edge-cut will be computed. 
+        If it is set low, a repartitioning that requires little data redistribution will be computed. 
+        Good values for this parameter can be obtained by dividing inter-processor
+        communication time by data redistribution time. Otherwise, a value of 1000.0 is recommended.
+
+    comm : MPI_Comm, optional
+        MPI communicator, if not specified, then will use MPI_COMM_WORLD and
+        try to initialize MPI via `mpi4py`.
+    options : np.ndarray
+        Control parameter array, see the manual 4.2.4
+    Returns
+    -------
+    edgecuts : int
+        Number of edge cuts for this process
+    part : np.ndarray
+        Local partition array of the local graph.
+
+    Other Parameters
+    -----------------
+    vwgt, adjwgt : np.ndarray, optional
+        Weighting for nodes and edges, see manual 4.2.1
+    
+    vsize : np.ndarray, optional
+        This array stores the size of the vertices with respect to redistribution costs.
+            Hence, vertices associated with mesh elements that require a lot of memory 
+            will have larger corresponding entries in this array. 
+            Otherwise, this array is similar to the vwgt array, see manual 4.2.1.
+    ncon : int, optional
+        This is used to specify the number of weights that each vertex has. It
+        is also the number of balance constraints that must be satisfied. The
+        default value is 1
+    tpwgts, ubvec : np.ndarray, optional
+        See the manual
+    par_debug : bool, optional
+        Flag controling whether or not to perform a collection debugging
+        actions to ensure the consistencies between weighting and numbering.
+        Default is False.
+    xyz : np.ndarray, optional
+        If provided, then it's must be 2D array of coordinates, which are stored
+        in a point-by-point fashion. The second dimension must be either 2 (2D)
+        or 3 (3D). In addition, if it's specified, then this routine will call
+        ``PartGeomKway`` instead of ``PartKway``.
+    part : np.ndarray, optional
+        User buffer for `part`.
+    """
+    if nparts <= 0:
+        raise ValueError("invalid partition number")
+    xadj, adjncy, nv = process_graph(xadj, adjncy)
+    comm = get_comm(comm)  # NOTE: we initialize MPI here (if needed)
+    vtxdist = np.asarray(
+        vtxdist if vtxdist is not None else build_proc_dist(nv, comm, xadj[0]),
+        dtype=xadj.dtype,
+    )
+    if vtxdist.size <= comm.size:
+        raise ValueError("invalid vtxdist size, must be comm.size+1")
+    vwgt = try_get_input_array(kw, "vwgt", nv, xadj.dtype)
+    vsize = try_get_input_array(kw, "vsize", nv, xadj.dtype)
+    adjwgt = try_get_input_array(kw, "adjwgt", xadj[-1] - xadj[0], xadj.dtype)
+    wgtflag = determine_wgtflag(vwgt, adjwgt)
+    numflag = xadj[0]
+    if kw.get("par_debug", False) and is_par(comm):
+        # debug numflags
+        flags = comm.allgather(numflag)
+        if not np.all([x == xadj[0] for x in flags]):
+            raise ValueError("inconsistent numflags {} across processes".format(flags))
+        flags = comm.allgather(wgtflag)
+        if not np.all([x == wgtflag for x in flags]):
+            raise ValueError("inconsistent wgtflags {} accross processes".format(flags))
+    ncon = kw.get("ncon", 1)
+    assert ncon >= 1
+    tpwgts = try_get_input_array(kw, "tpwgts", ncon * nparts, np.float32)
+    if tpwgts is None:
+        tpwgts = np.ones(ncon * nparts, dtype=np.float32) / nparts
+    ubvec = try_get_input_array(kw, "ubvec", ncon, np.float32)
+    if ubvec is None or isinstance(ubvec, float):
+        try:
+            ubvec = float(ubvec)
+        except TypeError:
+            ubvec = 1.05
+        ubvec = np.asarray([ubvec] * ncon, dtype=np.float32)
+    opts = _get_default_raw_opts(kw, xadj.dtype)
+    # NOTE: handle geometry partition, assume 2D for the helper
+    xyz = try_get_input_array(kw, "xyz", nv * 2, np.float32)
+    # check size of xzy
+    lib = _get_libparmetis(xadj.dtype)
+    idx_t = lib._IDX_T
+    nparts, ncon, numflag, wgtflag, edgecut = (
+        idx_t(nparts),
+        idx_t(ncon),
+        idx_t(numflag),
+        idx_t(wgtflag),
+        idx_t(0),
+    )
+
+    itr = lib._REAL_T(itr)
+    # part = get_or_create_workspace(kw, "part", nv, xadj.dtype)
+    if xyz is None:
+        # regular Kway
+        lib.AdaptiveRepart(
+            as_pointer(vtxdist), #1
+            as_pointer(xadj), #2
+            as_pointer(adjncy), #3
+            as_pointer(vwgt), #4
+            as_pointer(vsize), #5
+            as_pointer(adjwgt), #6
+            c.byref(wgtflag), #7
+            c.byref(numflag), #8
+            c.byref(ncon), #9
+            c.byref(nparts), #10
+            as_pointer(tpwgts), #11
+            as_pointer(ubvec), #12
+            c.byref(itr), #13
+            as_pointer(opts), #14
+            c.byref(edgecut), #15 
+            as_pointer(part), #16
+            comm_ptr(comm), #17
+        )
+    else:
+        # NOTE: geometric Kway
+        if xyz.ndim != 2:
+            raise ValueError("coordinate must be 2D array")
+        if len(xyz) < nv:
+            raise ValueError("not enough coordinates")
+        ndims = idx_t(xyz.shape[1])
+        lib.AdaptiveRepart(
+            as_pointer(vtxdist),
+            as_pointer(xadj),
+            as_pointer(adjncy),
+            as_pointer(vwgt),
+            as_pointer(vsize),
+            as_pointer(adjwgt),
+            c.byref(wgtflag),
+            c.byref(numflag),
+            c.byref(ndims),
+            as_pointer(xyz),
+            c.byref(ncon),
+            c.byref(nparts),
+            as_pointer(tpwgts),
+            as_pointer(ubvec),
+            as_pointer(opts),
+            c.byref(edgecut),
+            as_pointer(part),
+            comm_ptr(comm),
+        )
+    return edgecut.value, part
 
 def part_geom(xyz, vtxdist=None, comm=None, **kw):
     """Pure geometry based partitioning, not recommended
